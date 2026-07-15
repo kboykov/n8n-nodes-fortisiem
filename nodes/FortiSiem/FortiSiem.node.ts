@@ -1,11 +1,14 @@
 import type {
+	ICredentialsDecrypted,
+	ICredentialTestFunctions,
 	IDataObject,
 	IExecuteFunctions,
+	INodeCredentialTestResult,
 	INodeExecutionData,
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
+import { jsonParse, NodeApiError, NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
 
 import {
 	fortiSiemApiRequest,
@@ -60,7 +63,9 @@ function extractQueryId(response: unknown): string | undefined {
 	if (response && typeof response === 'object') {
 		const obj = response as IDataObject;
 		const candidate = obj.queryId ?? obj.queryID ?? obj.id ?? obj.data;
-		if (candidate !== undefined && candidate !== null) return String(candidate);
+		if (typeof candidate === 'string' || typeof candidate === 'number') {
+			return String(candidate).trim() || undefined;
+		}
 	}
 	return undefined;
 }
@@ -85,7 +90,7 @@ export class FortiSiem implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'FortiSIEM',
 		name: 'fortiSiem',
-		icon: 'file:../../icons/fortisiem.png',
+		icon: 'file:../../icons/fortisiem.svg',
 		group: ['input'],
 		version: 1,
 		subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
@@ -94,12 +99,13 @@ export class FortiSiem implements INodeType {
 			name: 'FortiSIEM',
 		},
 		usableAsTool: true,
-		inputs: ['main'],
-		outputs: ['main'],
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'fortiSiemApi',
 				required: true,
+				testedBy: 'fortiSiemApiTest',
 			},
 		],
 		properties: [
@@ -173,6 +179,69 @@ export class FortiSiem implements INodeType {
 			...watchlistFields,
 			...workerFields,
 		],
+	};
+
+	methods = {
+		credentialTest: {
+			async fortiSiemApiTest(
+				this: ICredentialTestFunctions,
+				credential: ICredentialsDecrypted,
+			): Promise<INodeCredentialTestResult> {
+				const data = credential.data as unknown as {
+					baseUrl: string;
+					authentication: 'basicAuth' | 'accessToken';
+					username?: string;
+					password?: string;
+					clientId?: string;
+					clientSecret?: string;
+					allowUnauthorizedCerts: boolean;
+				};
+				const baseUrl = (data.baseUrl ?? '').replace(/\/$/, '');
+				try {
+					if (data.authentication === 'accessToken') {
+						// Exchanging the client credentials for a token validates them directly.
+						const response = (await this.helpers.request({
+							method: 'POST',
+							uri: `${baseUrl}/phoenix/rest/pub/security/oauth/token`,
+							form: {
+								grant_type: 'client_credentials',
+								client_id: data.clientId ?? '',
+								client_secret: data.clientSecret ?? '',
+							},
+							json: true,
+							rejectUnauthorized: !data.allowUnauthorizedCerts,
+						})) as IDataObject;
+						if (!response.access_token && !response.token) {
+							return {
+								status: 'Error',
+								message: 'FortiSIEM did not return an access token',
+							};
+						}
+					} else {
+						await this.helpers.request({
+							method: 'GET',
+							uri: `${baseUrl}/phoenix/rest/system/health/summary`,
+							headers: {
+								Authorization: `Basic ${Buffer.from(
+									`${data.username ?? ''}:${data.password ?? ''}`,
+								).toString('base64')}`,
+								Accept: 'application/json',
+							},
+							rejectUnauthorized: !data.allowUnauthorizedCerts,
+						});
+					}
+				} catch (error) {
+					return {
+						status: 'Error',
+						message: (error as Error).message,
+					};
+				}
+				return {
+					status: 'OK',
+					message: 'Authentication successful',
+				};
+			},
+		},
 	};
 
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
@@ -253,7 +322,10 @@ export class FortiSiem implements INodeType {
 					});
 					continue;
 				}
-				throw error;
+				if (error instanceof NodeApiError || error instanceof NodeOperationError) {
+					throw error;
+				}
+				throw new NodeOperationError(this.getNode(), error as Error, { itemIndex: i });
 			}
 		}
 
@@ -393,14 +465,29 @@ async function handleIncident(
 			});
 		}
 
+		let completed = false;
 		for (let attempt = 0; attempt < maxPolls; attempt++) {
 			const progress = await fortiSiemApiRequest.call(
 				this,
 				'GET',
 				`/phoenix/rest/pub/incident/triggeringEvents/progress/${encodeURIComponent(queryId)}`,
 			);
-			if (extractProgress(progress) >= 100) break;
+			if (extractProgress(progress) >= 100) {
+				completed = true;
+				break;
+			}
 			await sleep(pollInterval);
+		}
+		if (!completed) {
+			throw new NodeOperationError(
+				this.getNode(),
+				`The triggering events query did not complete within ${maxPolls} progress checks`,
+				{
+					itemIndex: i,
+					description:
+						'Increase "Max Poll Attempts" or "Poll Interval (Ms)", or use the separate Start / Progress / Result operations',
+				},
+			);
 		}
 
 		return (await fortiSiemApiRequest.call(
@@ -444,16 +531,31 @@ async function handleEvent(
 				itemIndex: i,
 			});
 		}
-		const limit = this.getNodeParameter('limit', i, 100) as number;
+		const limit = this.getNodeParameter('limit', i, 50) as number;
 		const pollInterval = this.getNodeParameter('pollInterval', i, 1500) as number;
 		const maxPolls = this.getNodeParameter('maxPolls', i, 40) as number;
 
+		let completed = false;
 		for (let attempt = 0; attempt < maxPolls; attempt++) {
 			const progress = await fortiSiemApiRequest.call(this, 'GET', '/phoenix/rest/pub/v2/query/progress', {
 				qs: { queryId },
 			});
-			if (extractProgress(progress) >= 100) break;
+			if (extractProgress(progress) >= 100) {
+				completed = true;
+				break;
+			}
 			await sleep(pollInterval);
+		}
+		if (!completed) {
+			throw new NodeOperationError(
+				this.getNode(),
+				`The event query did not complete within ${maxPolls} progress checks`,
+				{
+					itemIndex: i,
+					description:
+						'Increase "Max Poll Attempts" or "Poll Interval (Ms)", or use Submit Query followed by Get Query Progress / Get Query Results',
+				},
+			);
 		}
 
 		return (await fortiSiemApiRequest.call(this, 'GET', '/phoenix/rest/pub/v2/query/events/results', {
@@ -463,6 +565,16 @@ async function handleEvent(
 
 	if (operation === 'getProgress') {
 		const queryId = this.getNodeParameter('queryId', i) as string;
+		const archiveQuery = this.getNodeParameter('archiveQuery', i, false) as boolean;
+		// Archive queries are submitted to the legacy endpoint and must also be
+		// polled via the legacy progress/results endpoints, not the v2 ones.
+		if (archiveQuery) {
+			return (await fortiSiemApiRequest.call(
+				this,
+				'GET',
+				`/phoenix/rest/query/progress/${encodeURIComponent(queryId)}`,
+			)) as IDataObject;
+		}
 		return (await fortiSiemApiRequest.call(this, 'GET', '/phoenix/rest/pub/v2/query/progress', {
 			qs: { queryId },
 		})) as IDataObject;
@@ -471,7 +583,15 @@ async function handleEvent(
 	if (operation === 'getResults') {
 		const queryId = this.getNodeParameter('queryId', i) as string;
 		const offset = this.getNodeParameter('offset', i, 0) as number;
-		const limit = this.getNodeParameter('limit', i, 100) as number;
+		const limit = this.getNodeParameter('limit', i, 50) as number;
+		const archiveQuery = this.getNodeParameter('archiveQuery', i, false) as boolean;
+		if (archiveQuery) {
+			return (await fortiSiemApiRequest.call(
+				this,
+				'GET',
+				`/phoenix/rest/query/events/${encodeURIComponent(queryId)}/${offset}/${limit}`,
+			)) as IDataObject;
+		}
 		return (await fortiSiemApiRequest.call(this, 'GET', '/phoenix/rest/pub/v2/query/events/results', {
 			qs: { queryId, offset, limit },
 		})) as IDataObject;
@@ -616,7 +736,11 @@ async function handleDevice(
 		if (options.fields) body.fields = splitList(options.fields as string);
 		if (options.filter) {
 			const filter =
-				typeof options.filter === 'string' ? JSON.parse(options.filter as string) : options.filter;
+				typeof options.filter === 'string'
+					? jsonParse<IDataObject>(options.filter, {
+							errorMessage: 'The "Filter (JSON)" option is not valid JSON',
+						})
+					: (options.filter as IDataObject);
 			if (filter && Object.keys(filter).length) body.filter = filter;
 		}
 		return (await fortiSiemApiRequest.call(this, 'POST', '/phoenix/rest/pub/device', {
@@ -653,6 +777,11 @@ async function handleDeviceMaintenance(
 	operation: string,
 	i: number,
 ): Promise<IDataObject | IDataObject[]> {
+	if (operation !== 'updateSchedule' && operation !== 'deleteSchedule') {
+		throw new NodeOperationError(this.getNode(), `Unknown operation: ${operation}`, {
+			itemIndex: i,
+		});
+	}
 	const body = this.getNodeParameter('scheduleXml', i) as string;
 	const endpoint =
 		operation === 'deleteSchedule'
@@ -772,7 +901,9 @@ async function handleLookupTable(
 	if (operation === 'list') {
 		const options = this.getNodeParameter('options', i, {}) as IDataObject;
 		const qs: IDataObject = {};
-		if (options.status !== undefined) qs.status = options.status;
+		// FortiSIEM's OpenAPI spec really does call the pagination offset "status"
+		// on GET /pub/lookupTable ("Offset the list of returned results by this amount").
+		if (options.start !== undefined) qs.status = options.start;
 		if (options.size !== undefined) qs.size = options.size;
 		return (await fortiSiemApiRequest.call(this, 'GET', '/phoenix/rest/pub/lookupTable', {
 			qs,

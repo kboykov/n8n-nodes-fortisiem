@@ -78,7 +78,9 @@ Create a **FortiSIEM API** credential and pick an authentication method:
 | **Client ID** / **Client Secret** | *(Access Token)* Credentials generated in FortiSIEM (Admin > Settings > API Token) |
 | **Ignore SSL Issues (Insecure)** | Enable for self-signed certificates |
 
-With **Access Token** auth the node exchanges the Client ID/Secret at `/phoenix/rest/pub/security/oauth/token` for a bearer token and caches it until shortly before it expires.
+With **Access Token** auth the node exchanges the Client ID/Secret at `/phoenix/rest/pub/security/oauth/token` for a bearer token and caches it until shortly before it expires (a revoked token is re-exchanged automatically on the next 401).
+
+Use the **Test** button on the credential to verify connectivity: Access Token mode performs the token exchange, Basic Auth mode calls the health summary endpoint.
 
 ---
 
@@ -88,7 +90,7 @@ With **Access Token** auth the node exchanges the Client ID/Secret at `/phoenix/
 Fetch (advanced filters), Get Many (time window or ID list), Get Page, Update, Start Triggering Events Query, Get Triggering Events Progress / Result, and **Get Triggering Events** (runs start → poll → result automatically).
 
 ### Event
-Submit Query, Get Query Progress, Get Query Results, **Run Query** (submit → poll → results), and Submit Archive Query (report XML against archive storage). Supports v2 simple search and ClickHouse SQL advanced search.
+Submit Query, Get Query Progress, Get Query Results, **Run Query** (submit → poll → results), and Submit Archive Query (report XML against archive storage). Supports v2 simple search and ClickHouse SQL advanced search. Archive queries are polled via the legacy endpoints — enable the **Archive Query** toggle on Get Query Progress / Get Query Results.
 
 ### Case
 Create, Update, Get Analysts, Add Attachment (binary upload).

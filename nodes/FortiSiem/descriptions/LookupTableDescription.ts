@@ -86,7 +86,8 @@ export const lookupTableFields: INodeProperties[] = [
 		default: {},
 		displayOptions: { show: { resource: ['lookupTable'], operation: ['list'] } },
 		options: [
-			{ displayName: 'Start', name: 'status', type: 'number', default: 0, description: 'Offset' },
+			// Sent to the API as "status" — that is FortiSIEM's name for the list offset
+			{ displayName: 'Start', name: 'start', type: 'number', default: 0, description: 'Offset' },
 			{
 				displayName: 'Size',
 				name: 'size',
@@ -155,7 +156,7 @@ export const lookupTableFields: INodeProperties[] = [
 				type: 'string',
 				default: '',
 				placeholder: 'score DESC',
-				description: 'Format: <ColumnName> <ASC|DESC>',
+				description: 'Format: &lt;ColumnName&gt; &lt;ASC|DESC&gt;',
 			},
 		],
 	},

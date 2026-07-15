@@ -35,22 +35,14 @@ function normalizeBaseUrl(baseUrl: string): string {
 	return baseUrl.replace(/\/$/, '');
 }
 
-// Serialize a query object, expanding arrays into repeated keys (?k=a&k=b),
-// which is how FortiSIEM's OpenAPI array parameters are defined (explode=true).
-function buildQueryString(qs: IDataObject): string {
-	const parts: string[] = [];
-	const add = (key: string, value: unknown) => {
-		if (value === undefined || value === null || value === '') return;
-		parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`);
-	};
+// Drop empty query values so optional parameters are omitted instead of sent as "key=".
+function cleanQuery(qs: IDataObject): IDataObject {
+	const cleaned: IDataObject = {};
 	for (const [key, value] of Object.entries(qs)) {
-		if (Array.isArray(value)) {
-			for (const item of value) add(key, item);
-		} else {
-			add(key, value);
-		}
+		if (value === undefined || value === null || value === '') continue;
+		cleaned[key] = value;
 	}
-	return parts.length ? `?${parts.join('&')}` : '';
+	return cleaned;
 }
 
 async function getAccessToken(
@@ -141,34 +133,52 @@ export async function fortiSiemApiRequest(
 ): Promise<unknown> {
 	const credentials = (await this.getCredentials('fortiSiemApi')) as unknown as FortiSiemCredentials;
 	const baseUrl = normalizeBaseUrl(credentials.baseUrl);
-	const authHeaders = await buildAuthHeaders(this, credentials);
-
-	const query = options.qs ? buildQueryString(options.qs) : '';
 
 	const requestOptions: IHttpRequestOptions = {
 		method,
-		url: `${baseUrl}${endpoint}${query}`,
+		url: `${baseUrl}${endpoint}`,
 		headers: {
 			Accept: 'application/json',
 			...(options.contentType ? { 'Content-Type': options.contentType } : {}),
 			...(options.headers ?? {}),
-			...authHeaders,
 		},
+		qs: options.qs ? cleanQuery(options.qs) : undefined,
+		// FortiSIEM's OpenAPI defines array parameters as repeated keys (?k=a&k=b)
+		arrayFormat: 'repeat',
 		body: options.body,
 		json: false,
 		skipSslCertificateValidation: credentials.allowUnauthorizedCerts,
 	};
 
-	try {
-		const response = await this.helpers.httpRequest(requestOptions);
-		return options.raw ? response : parseResponse(response);
-	} catch (error) {
-		throw new NodeApiError(this.getNode(), error as JsonObject);
+	// A cached bearer token can be revoked server-side before it expires locally,
+	// so retry exactly once with a freshly exchanged token on 401.
+	for (let attempt = 0; ; attempt++) {
+		try {
+			const authHeaders = await buildAuthHeaders(this, credentials);
+			requestOptions.headers = { ...requestOptions.headers, ...authHeaders };
+			const response = await this.helpers.httpRequest(requestOptions);
+			return options.raw ? response : parseResponse(response);
+		} catch (error) {
+			const errObj = error as {
+				response?: { status?: number };
+				httpCode?: string;
+				statusCode?: number;
+			};
+			const status = Number(errObj.response?.status ?? errObj.httpCode ?? errObj.statusCode);
+			if (attempt === 0 && status === 401 && credentials.authentication === 'accessToken') {
+				tokenCache.delete(`${baseUrl}::${credentials.clientId}`);
+				continue;
+			}
+			if (error instanceof NodeApiError) throw error;
+			throw new NodeApiError(this.getNode(), error as JsonObject);
+		}
 	}
 }
 
 // Multipart/form-data upload (Case attachment, Lookup Table import). Uses the legacy
-// request helper because it handles multipart streaming for binary payloads.
+// request helper because it handles multipart streaming for binary payloads: the modern
+// httpRequest helper types multipart bodies as `form-data` package instances, which a
+// zero-dependency community node cannot construct.
 export async function fortiSiemApiRequestFormData(
 	this: IExecuteFunctions,
 	method: IHttpRequestMethods,
@@ -206,9 +216,14 @@ export function splitList(value: string): string[] {
 		.filter((part) => part !== '');
 }
 
-// Split a comma-separated string into a list of numbers (drops non-numeric entries).
+// Split a comma-separated string into a list of numbers. Throws on non-numeric entries
+// instead of dropping them silently — several callers use the result for delete operations.
 export function splitNumberList(value: string): number[] {
-	return splitList(value)
-		.map((part) => Number(part))
-		.filter((part) => !Number.isNaN(part));
+	return splitList(value).map((part) => {
+		const num = Number(part);
+		if (Number.isNaN(num)) {
+			throw new Error(`The value "${part}" in the ID list "${value}" is not a number`);
+		}
+		return num;
+	});
 }

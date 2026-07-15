@@ -13,12 +13,6 @@ export const eventOperations: INodeProperties[] = [
 		},
 		options: [
 			{
-				name: 'Submit Query',
-				value: 'submitQuery',
-				description: 'Submit a v2 JSON event query (simple search or advanced ClickHouse SQL)',
-				action: 'Submit an event query',
-			},
-			{
 				name: 'Get Query Progress',
 				value: 'getProgress',
 				description: 'Poll the execution status of a submitted event query',
@@ -41,6 +35,12 @@ export const eventOperations: INodeProperties[] = [
 				value: 'submitArchiveQuery',
 				description: 'Submit an event query (report XML) against the archive event database',
 				action: 'Submit an archive event query',
+			},
+			{
+				name: 'Submit Query',
+				value: 'submitQuery',
+				description: 'Submit a v2 JSON event query (simple search or advanced ClickHouse SQL)',
+				action: 'Submit an event query',
 			},
 		],
 		default: 'runQuery',
@@ -106,7 +106,21 @@ export const eventFields: INodeProperties[] = [
 		type: 'string',
 		default: '',
 		required: true,
-		description: 'The query ID returned by Submit Query',
+		description: 'The query ID returned by Submit Query or Submit Archive Query',
+		displayOptions: {
+			show: {
+				resource: ['event'],
+				operation: ['getProgress', 'getResults'],
+			},
+		},
+	},
+	{
+		displayName: 'Archive Query',
+		name: 'archiveQuery',
+		type: 'boolean',
+		default: false,
+		description:
+			'Whether the query ID belongs to a query submitted with Submit Archive Query (those are polled via the legacy endpoints, not the v2 ones)',
 		displayOptions: {
 			show: {
 				resource: ['event'],
@@ -131,8 +145,11 @@ export const eventFields: INodeProperties[] = [
 		displayName: 'Limit',
 		name: 'limit',
 		type: 'number',
-		default: 100,
-		description: 'Maximum number of rows to return',
+		typeOptions: {
+			minValue: 1,
+		},
+		default: 50,
+		description: 'Max number of results to return',
 		displayOptions: {
 			show: {
 				resource: ['event'],
@@ -148,8 +165,11 @@ export const eventFields: INodeProperties[] = [
 		displayName: 'Limit',
 		name: 'limit',
 		type: 'number',
-		default: 100,
-		description: 'Maximum number of result rows to return',
+		typeOptions: {
+			minValue: 1,
+		},
+		default: 50,
+		description: 'Max number of results to return',
 		displayOptions: {
 			show: {
 				resource: ['event'],
@@ -195,7 +215,7 @@ export const eventFields: INodeProperties[] = [
 		default: SAMPLE_ARCHIVE_XML,
 		required: true,
 		description:
-			'The report definition as XML. Archive queries use the same progress/results endpoints as online queries.',
+			'The report definition as XML. Poll the returned query ID with Get Query Progress / Get Query Results with "Archive Query" enabled.',
 		displayOptions: {
 			show: {
 				resource: ['event'],
