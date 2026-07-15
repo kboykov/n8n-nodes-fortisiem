@@ -2,7 +2,7 @@
 
 An [n8n](https://n8n.io/) community node for [FortiSIEM](https://www.fortinet.com/products/siem/fortisiem) — Fortinet's security information and event management (SIEM) platform for real-time monitoring, analytics, and incident management.
 
-This node lets you interact with the FortiSIEM REST API directly from your n8n workflows: fetch and update incidents, retrieve triggering events, run analytic event queries, manage monitored organizations, and maintain watchlists.
+This node wraps the **FortiSIEM 7.5.1 REST API**, letting you fetch and update incidents, run event & CMDB queries, manage cases, watchlists and lookup tables, look up context & reputation, run Osquery on agents, drive device discovery, and monitor cluster health — all from your n8n workflows.
 
 [![npm version](https://img.shields.io/npm/v/n8n-nodes-fortisiem.svg)](https://www.npmjs.com/package/n8n-nodes-fortisiem)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -17,11 +17,7 @@ This node lets you interact with the FortiSIEM REST API directly from your n8n w
 - [Installation](#installation)
 - [Credentials](#credentials)
 - [Resources & Operations](#resources--operations)
-  - [Incident](#incident)
-  - [Event](#event)
-  - [Organization](#organization)
-  - [Watchlist](#watchlist)
-- [Usage Examples](#usage-examples)
+- [Usage Notes](#usage-notes)
 - [Development](#development)
 - [Publishing to npm](#publishing-to-npm)
 - [Compatibility](#compatibility)
@@ -31,13 +27,14 @@ This node lets you interact with the FortiSIEM REST API directly from your n8n w
 
 ## Features
 
-- **13 operations** across 4 FortiSIEM resource types
-- HTTP Basic authentication with built-in credential testing
+- **72 operations** across **16 resource types**
+- Two authentication methods: **HTTP Basic** and **OAuth Access Token** (Client ID / Client Secret → bearer, with automatic token caching & refresh)
 - Automatic JSON parsing of FortiSIEM's `text/plain` responses
+- Async query helpers that submit → poll → return results in a single step (event queries, incident triggering events)
+- Multipart uploads for case attachments and lookup-table CSV imports
+- Rich field metadata (enums, examples, descriptions) sourced directly from the official OpenAPI specs (see [`api_docs/`](api_docs))
 - Optional "Ignore SSL Issues" toggle for self-signed appliance certificates
-- `continueOnFail` support — process remaining items even when one fails
-- Compatible with n8n's **AI Tool** interface (`usableAsTool: true`)
-- Full TypeScript source with strict mode enabled
+- `continueOnFail` support and compatibility with n8n's **AI Tool** interface (`usableAsTool: true`)
 
 ---
 
@@ -46,7 +43,7 @@ This node lets you interact with the FortiSIEM REST API directly from your n8n w
 | Requirement | Version |
 |---|---|
 | n8n | ≥ 1.0.0 |
-| FortiSIEM | ≥ 6.x (REST API, `/phoenix/rest`) |
+| FortiSIEM | 7.5.x (REST API under `/phoenix/rest`) |
 | Node.js | ≥ 18.x |
 
 ---
@@ -71,150 +68,119 @@ Then restart your n8n instance.
 
 ## Credentials
 
-Create a **FortiSIEM API** credential with the following fields:
+Create a **FortiSIEM API** credential and pick an authentication method:
 
-| Field | Description | Example |
-|---|---|---|
-| **Base URL** | Base URL of your FortiSIEM Supervisor (no trailing slash) | `https://fortisiem.example.com` |
-| **Username** | API user as `<organization>/<user>` | `super/admin` |
-| **Password** | Account password | `••••••••` |
-| **Ignore SSL Issues (Insecure)** | Connect even if the TLS certificate fails validation | `true` for self-signed certs |
+| Field | Description |
+|---|---|
+| **Base URL** | Base URL of your FortiSIEM Supervisor or Manager, e.g. `https://fortisiem.example.com` (no trailing slash) |
+| **Authentication** | `Basic Auth` or `Access Token (OAuth Client Credentials)` |
+| **Username** / **Password** | *(Basic Auth)* API user as `<organization>/<user>`, e.g. `super/admin` |
+| **Client ID** / **Client Secret** | *(Access Token)* Credentials generated in FortiSIEM (Admin > Settings > API Token) |
+| **Ignore SSL Issues (Insecure)** | Enable for self-signed certificates |
 
-The node authenticates every request using HTTP Basic auth. Click **Test connection** on the credential card to verify connectivity — this calls `GET /phoenix/rest/config/Domain` (list monitored organizations).
-
-> **Tip:** Create a dedicated FortiSIEM API user with the minimum required role for your workflows.
+With **Access Token** auth the node exchanges the Client ID/Secret at `/phoenix/rest/pub/security/oauth/token` for a bearer token and caches it until shortly before it expires.
 
 ---
 
 ## Resources & Operations
 
 ### Incident
-
-| Operation | Description | Endpoint |
-|---|---|---|
-| **Fetch** | Fetch incidents by filters, time range, paging and ordering | `POST /phoenix/rest/pub/incident` |
-| **Get Many** | Retrieve incidents, optionally filtered by status | `GET /phoenix/rest/pub/incident` |
-| **Get Triggering Events** | Retrieve the events that triggered an incident | `GET /phoenix/rest/pub/incident/triggeringEvents` |
-| **Update** | Update the external ticket state of an incident | `POST /phoenix/rest/pub/incident/update/{incidentId}` |
-
-**Fetch** filter options: incident IDs, status, `timeFrom`/`timeTo` (epoch ms), `start`, `size`, `orderBy`, `descending`, and the list of `fields` to return.
-
----
+Fetch (advanced filters), Get Many (time window or ID list), Get Page, Update, Start Triggering Events Query, Get Triggering Events Progress / Result, and **Get Triggering Events** (runs start → poll → result automatically).
 
 ### Event
+Submit Query, Get Query Progress, Get Query Results, **Run Query** (submit → poll → results), and Submit Archive Query (report XML against archive storage). Supports v2 simple search and ClickHouse SQL advanced search.
 
-| Operation | Description | Endpoint |
-|---|---|---|
-| **Query** | Run an analytic event query defined by an XML report | `POST /phoenix/rest/query/` |
+### Case
+Create, Update, Get Analysts, Add Attachment (binary upload).
 
-The **Report XML** field is pre-filled with a sample report definition (top events by count) to get you started.
+### CMDB Query
+Query CMDB objects (Device, User, Rule, Report, Case, Risk, …) and Get Schema for a table.
 
----
+### Device
+List, Delete, List Monitored, Update Monitoring (XML).
+
+### Device Maintenance
+Create/Update Schedule, Delete Schedule (XML).
+
+### Discovery
+Discover devices, Get Status, Update Credential (XML).
 
 ### Organization
+Get Many, Add, Update (XML), Delete.
 
-| Operation | Description | Endpoint |
-|---|---|---|
-| **Get Many** | Retrieve the list of monitored organizations | `GET /phoenix/rest/config/Domain` |
-| **Add** | Add a new organization | `POST /phoenix/rest/organization/add` |
-| **Update** | Update an organization | `GET /phoenix/rest/organization/update` |
+### Context
+Get by Hostname, Get by IP, Get by User.
 
----
+### Reputation
+Check Domain, Hash, IP, URL.
+
+### Lookup Table
+List, Create, Delete, Get Data, Update Data, Delete Data, Import (CSV upload), Get Import Status.
+
+### Osquery
+Run, Get Progress, Get Result.
+
+### Agent
+Get Status (Windows/Linux agents, v3).
+
+### Health
+Get Full Health, Get Instance Health, Get Health Summary.
 
 ### Watchlist
+Get Many, Get Summary, Get, Get Entry, Get Containing Watchlist, Get by Value, Get Count, Get Entries by Type (IP/Hash/Domain), Create, Add Entries, Delete Watchlists, Delete Entries, Update Entry, Set Entry Active / Count / Last Seen.
 
-| Operation | Description | Endpoint |
-|---|---|---|
-| **Get Many** | Retrieve all watchlists | `GET /phoenix/rest/watchlist/all` |
-| **Get By Entry** | Get the watchlist containing a specific entry | `GET /phoenix/rest/watchlist/byEntry/{id}` |
-| **Add Entry** | Add an entry to a watchlist | `POST /phoenix/rest/watchlist/addTo` |
-| **Create Group** | Create a new watchlist group | `POST /phoenix/rest/watchlist/save` |
-| **Delete Entry** | Delete one or more watchlist entries | `POST /phoenix/rest/watchlist/entry/delete` |
+### Worker
+Get Event Workers, Get Queue State.
 
 ---
 
-## Usage Examples
+## Usage Notes
 
-### Poll for new active incidents and alert
+- **Timestamps:** date/time fields in the UI are converted automatically to the units FortiSIEM expects (epoch milliseconds in most places, epoch seconds for case-analyst statistics).
+- **Incident triggering events:** the time window cannot exceed 24 hours.
+- **XML endpoints** (Organization add/update, Device monitoring, Discovery, Device Maintenance) accept the FortiSIEM XML payloads; each field is pre-filled with a template you can adapt.
+- **Advanced JSON bodies** (Event query, Lookup Table create, Watchlist create) accept raw JSON with sensible sample defaults.
+- FortiSIEM often returns `text/plain`; the node parses JSON automatically and returns non-JSON output (e.g. one-per-line watchlist exports) under a `data` property.
 
-1. Add a **Schedule Trigger**
-2. Add a **FortiSIEM** node → resource **Incident** → **Fetch**, set **Time From**/**Time To** to your window and **Status** to `0` (active)
-3. Add an **IF** node to check severity
-4. Add a **Slack** / **Email** node to notify
-
-### Sync a FortiSIEM incident to an external ticketing system
-
-1. **FortiSIEM** → Incident → **Fetch** the incidents you care about
-2. Create the ticket in your ITSM tool
-3. **FortiSIEM** → Incident → **Update** with the **External Ticket ID** and **External Ticket State** (e.g. `Closed`)
-
-### Investigate an incident's root cause
-
-1. **FortiSIEM** → Incident → **Get Triggering Events**, expression `{{ $json.incidentId }}` as Incident ID
-2. Inspect the raw events that generated the incident
+The complete OpenAPI reference used to build this node is included in [`api_docs/`](api_docs).
 
 ---
 
 ## Development
 
-### Requirements
-
-- Node.js ≥ 18
-- npm ≥ 9
-
-### Setup
-
 ```bash
 git clone https://github.com/kboykov/n8n-nodes-fortisiem.git
 cd n8n-nodes-fortisiem
 npm install
-```
-
-### Build
-
-```bash
-npm run build
-```
-
-This runs `tsc` followed by `gulp build:icons` to copy the icon into `dist/`.
-
-### Lint & format
-
-```bash
-npm run lint
-npm run lint:fix   # auto-fix where possible
+npm run build      # tsc + copy icons
+npm run lint       # eslint
+npm run lint:fix
 npm run format     # prettier
 ```
 
-### Local testing with n8n
+Local testing with n8n:
 
 ```bash
 # In this repo
 npm link
-
 # In your local n8n installation directory
 npm link n8n-nodes-fortisiem
 ```
-
-Then restart n8n. The FortiSIEM node will appear in the node picker.
 
 ### Project structure
 
 ```
 n8n-nodes-fortisiem/
 ├── credentials/
-│   └── FortiSiemApi.credentials.ts     # Credential definition (Basic auth)
+│   └── FortiSiemApi.credentials.ts
 ├── nodes/
 │   └── FortiSiem/
-│       ├── FortiSiem.node.ts            # Main node implementation
-│       └── descriptions/
-│           ├── IncidentDescription.ts
-│           ├── EventDescription.ts
-│           ├── OrganizationDescription.ts
-│           └── WatchlistDescription.ts
-├── icons/
-│   └── fortisiem.png
-├── .github/workflows/publish.yml        # Automated npm publish on tag
+│       ├── FortiSiem.node.ts          # description assembly + execute router
+│       ├── GenericFunctions.ts        # auth, token cache, request helpers
+│       └── descriptions/              # one file per resource
+├── icons/fortisiem.png
+├── api_docs/                          # official FortiSIEM 7.5.1 OpenAPI specs
+├── .github/workflows/publish.yml      # automated npm publish on tag
 ├── gulpfile.js
 ├── package.json
 └── tsconfig.json
@@ -224,26 +190,23 @@ n8n-nodes-fortisiem/
 
 ## Publishing to npm
 
-Releases are published to [npm](https://www.npmjs.com/package/n8n-nodes-fortisiem) automatically by the [`Publish`](.github/workflows/publish.yml) GitHub Actions workflow, which triggers on any pushed tag matching `*.*.*` (e.g. `0.1.0`).
+Releases are published to [npm](https://www.npmjs.com/package/n8n-nodes-fortisiem) automatically by the [`Publish`](.github/workflows/publish.yml) GitHub Actions workflow, which triggers on any pushed tag matching `*.*.*`.
 
 The workflow runs `npm ci`, then `npm publish --provenance --access public`, so releases include [npm provenance](https://docs.npmjs.com/generating-provenance-statements) attestation.
 
 ### One-time setup
 
 1. Create an **automation** access token on npmjs.com (Account → Access Tokens → Generate New Token → *Automation*).
-2. In this repository, go to **Settings → Secrets and variables → Actions** and add a secret named **`NPM_TOKEN`** with that token.
+2. In this repository, add it as an Actions secret named **`NPM_TOKEN`** (Settings → Secrets and variables → Actions).
 
 ### Cutting a release
 
 ```bash
-# Bump the version in package.json and create a matching git tag
 npm version patch   # or: minor / major
-
-# Push the commit and the tag — the tag push triggers the workflow
 git push --follow-tags
 ```
 
-Pushing the tag (for example `v0.1.1` → the workflow matches the `0.1.1` portion) starts the workflow, which builds via the `prepublishOnly` script and publishes to npm.
+Pushing the tag starts the workflow, which builds via `prepublishOnly` and publishes to npm.
 
 ---
 
@@ -252,7 +215,7 @@ Pushing the tag (for example `v0.1.1` → the workflow matches the `0.1.1` porti
 | Component | Status |
 |---|---|
 | n8n Nodes API | v1 |
-| FortiSIEM REST API | `/phoenix/rest` (FortiSIEM ≥ 6.x) |
+| FortiSIEM REST API | 7.5.1 (`/phoenix/rest`) |
 
 ---
 
